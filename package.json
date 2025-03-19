@@ -1,15 +1,25 @@
 {
-  "name": "nodejs",
+  "name": "workspace",
   "version": "1.0.0",
-  "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon index.js",
+    "start": "node index.js",
+    "restart": "node restart-wrapper.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "description": "",
   "dependencies": {
-    "@types/node": "^18.0.6"
+    "@whiskeysockets/baileys": "^6.7.16",
+    "axios": "^1.8.3",
+    "moment-timezone": "^0.5.47",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0",
+    "wa-sticker-formatter": "^4.4.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
   }
 }
