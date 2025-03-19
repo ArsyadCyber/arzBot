@@ -1,12 +1,109 @@
+const fs = require('fs');
+const path = require('path');
+
 class RateLimiter {
     constructor() {
-        this.commandUsage = new Map();
-        this.lastMessageTimestamp = new Map();
+        this.dbPath = path.join(__dirname, 'db', 'rate.json');
+        this.ensureDbExists();
         
-        this.globalMessageCount = 0;
-        this.globalMessageTimestamps = [];
-        this.hourlyMessageCount = 0;
-        this.hourlyMessageStartTime = Date.now();
+        const data = this.loadData();
+        this.commandUsage = new Map(Object.entries(data.commandUsage || {}));
+        this.lastMessageTimestamp = new Map(Object.entries(data.lastMessageTimestamp || {}));
+        
+        this.globalMessageTimestamps = data.globalMessageTimestamps || [];
+        this.hourlyMessageCount = data.hourlyMessageCount || 0;
+        this.hourlyMessageStartTime = data.hourlyMessageStartTime || Date.now();
+        
+        // Clean up old data on startup
+        this.cleanOldData();
+        
+        // Setup periodic saving
+        this.saveInterval = setInterval(() => this.saveData(), 60000); // Save every minute
+    }
+    
+    ensureDbExists() {
+        const dbDir = path.join(__dirname, 'db');
+        if (!fs.existsSync(dbDir)) {
+            fs.mkdirSync(dbDir, { recursive: true });
+        }
+        
+        if (!fs.existsSync(this.dbPath)) {
+            this.saveData({
+                commandUsage: {},
+                lastMessageTimestamp: {},
+                globalMessageTimestamps: [],
+                hourlyMessageCount: 0,
+                hourlyMessageStartTime: Date.now()
+            });
+        }
+    }
+    
+    loadData() {
+        try {
+            const data = fs.readFileSync(this.dbPath, 'utf-8');
+            return JSON.parse(data);
+        } catch (error) {
+            console.error('Error loading rate limiter data:', error);
+            return {
+                commandUsage: {},
+                lastMessageTimestamp: {},
+                globalMessageTimestamps: [],
+                hourlyMessageCount: 0,
+                hourlyMessageStartTime: Date.now()
+            };
+        }
+    }
+    
+    saveData(customData = null) {
+        try {
+            const data = customData || {
+                commandUsage: Object.fromEntries(this.commandUsage),
+                lastMessageTimestamp: Object.fromEntries(this.lastMessageTimestamp),
+                globalMessageTimestamps: this.globalMessageTimestamps,
+                hourlyMessageCount: this.hourlyMessageCount,
+                hourlyMessageStartTime: this.hourlyMessageStartTime
+            };
+            
+            fs.writeFileSync(this.dbPath, JSON.stringify(data, null, 2), 'utf-8');
+        } catch (error) {
+            console.error('Error saving rate limiter data:', error);
+        }
+    }
+    
+    cleanOldData() {
+        const now = Date.now();
+        const oneMinuteAgo = now - 60000;
+        
+        // Clean up command usage data
+        for (const [userId, timestamps] of this.commandUsage.entries()) {
+            const recentCommands = timestamps.filter(timestamp => timestamp > oneMinuteAgo);
+            if (recentCommands.length === 0) {
+                this.commandUsage.delete(userId);
+            } else {
+                this.commandUsage.set(userId, recentCommands);
+            }
+        }
+        
+        // Clean up old message timestamps
+        const oneHourAgo = now - 3600000;
+        for (const [userId, timestamp] of this.lastMessageTimestamp.entries()) {
+            if (timestamp < oneHourAgo) {
+                this.lastMessageTimestamp.delete(userId);
+            }
+        }
+        
+        // Clean up global message timestamps
+        this.globalMessageTimestamps = this.globalMessageTimestamps.filter(
+            timestamp => timestamp > oneMinuteAgo
+        );
+        
+        // Reset hourly counter if needed
+        if (now - this.hourlyMessageStartTime >= 3600000) {
+            this.resetHourlyCount();
+        }
+        
+        // Save cleaned data
+        this.saveData();
     }
 
     canExecuteCommand(userId) {
@@ -133,4 +230,26 @@ class RateLimiter {
     }
 }
 
-module.exports = new RateLimiter();
+// Create and export a single instance
+const rateLimiter = new RateLimiter();
+
+// Cleanup on exit
+process.on('exit', () => {
+    if (rateLimiter.saveInterval) {
+        clearInterval(rateLimiter.saveInterval);
+    }
+    rateLimiter.saveData();
+});
+
+// Handle unexpected shutdowns
+process.on('SIGINT', () => {
+    rateLimiter.saveData();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    rateLimiter.saveData();
+    process.exit(0);
+});
+
+module.exports = rateLimiter;

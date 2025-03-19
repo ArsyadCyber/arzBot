@@ -38,7 +38,7 @@ module.exports = {
             const path = require('path');
             const commandFiles = fs.readdirSync(__dirname).filter(file => file.endsWith('.js'));
 
-            let helpText = `*📱 DAFTAR PERINTAH BOT*\n\n`;
+            let helpText = `> *DAFTAR PERINTAH BOT*\n\n`;
 
             // Kategori perintah (akan diisi otomatis)
             const categories = {};
