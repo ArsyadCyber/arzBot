@@ -204,7 +204,20 @@ async function connectToWhatsApp() {
                 if (commands.has(commandName)) {
                     try {
                         const command = commands.get(commandName);
-
+                        const isGroup = sender.endsWith('@g.us');
+                        
+                        // Check permission flags
+                        
+                        // Group-only check
+                        if (command.isGroup && !isGroup) {
+                            await arz.sendMessage(
+                                sender, 
+                                { text: "❌ Maaf, perintah ini hanya dapat digunakan di dalam grup." },
+                                { quoted: m }
+                            );
+                            return;
+                        }
+                        
                         // Owner-only check
                         if (command.ownerOnly && sender !== config.ownerNumber) {
                             await arz.sendMessage(
@@ -213,6 +226,26 @@ async function connectToWhatsApp() {
                                 { quoted: m }
                             );
                             return;
+                        }
+                        
+                        // Admin-only check
+                        if (command.adminOnly && isGroup) {
+                            // Get group admins
+                            const groupMetadata = await arz.groupMetadata(sender);
+                            const groupAdmins = groupMetadata.participants
+                                .filter(p => p.admin)
+                                .map(p => p.id);
+                                
+                            // Check if user is admin
+                            const userJid = m.key.participant || sender;
+                            if (!groupAdmins.includes(userJid)) {
+                                await arz.sendMessage(
+                                    sender, 
+                                    { text: "❌ Maaf, perintah ini hanya dapat digunakan oleh admin grup." },
+                                    { quoted: m }
+                                );
+                                return;
+                            }
                         }
 
                         await command.execute(arz, sender, args, m);
@@ -230,6 +263,19 @@ async function connectToWhatsApp() {
             } finally {
                 // Clear message data to save memory
                 m.message = null;
+            }
+        });
+
+        // Add group participants update listener
+        arz.ev.on("group-participants.update", async (groupUpdate) => {
+            try {
+                // Get the welcome command to handle the update
+                const welcomeCommand = commands.get("welcome");
+                if (welcomeCommand && welcomeCommand.handleGroupParticipantsUpdate) {
+                    await welcomeCommand.handleGroupParticipantsUpdate(arz, groupUpdate);
+                }
+            } catch (error) {
+                console.error("Error handling group update:", error.message);
             }
         });
 

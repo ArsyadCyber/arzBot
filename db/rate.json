@@ -1,17 +1,16 @@
 {
   "commandUsage": {
     "6285751138075@s.whatsapp.net": [
-      1742463560206,
-      1742463613961,
-      1742463617222
+      1742505235283
     ]
   },
   "lastMessageTimestamp": {
-    "6285751138075@s.whatsapp.net": 1742463617225
+    "6285751138075@s.whatsapp.net": 1742505386295,
+    "120363416081179854@g.us": 1742505235285
   },
   "globalMessageTimestamps": [
-    1742463617225
+    1742505386295
   ],
-  "hourlyMessageCount": 9,
-  "hourlyMessageStartTime": 1742460628464
+  "hourlyMessageCount": 5,
+  "hourlyMessageStartTime": 1742504029098
 }
