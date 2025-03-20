@@ -2,7 +2,8 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    Browsers
+    Browsers,
+    makeCacheableSignalKeyStore
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const qrcode = require("qrcode-terminal");
@@ -20,7 +21,13 @@ const rl = readline.createInterface({
 
 // Initialize commands map outside of the connection function
 const commands = new Map();
-const commandsLoaded = false;
+let commandsLoaded = false;
+
+// Create session folder if it doesn't exist
+const SESSION_DIR = "./session";
+if (!fs.existsSync(SESSION_DIR)) {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+}
 
 // Function to load commands just once
 function loadCommands() {
@@ -37,6 +44,7 @@ function loadCommands() {
         }
         
         console.log(`Loaded ${commands.size} commands`);
+        commandsLoaded = true;
     } catch (error) {
         console.error("Error loading commands:", error);
     }
@@ -57,6 +65,10 @@ async function askPhoneNumber() {
 let retryCount = 0;
 const MAX_RETRIES = 5;
 
+// Global store for auth state to keep single session
+let authState = null;
+let saveCreds = null;
+
 async function connectToWhatsApp() {
     console.log("Connecting to WhatsApp...");
     
@@ -66,12 +78,17 @@ async function connectToWhatsApp() {
             loadCommands();
         }
         
-        // Create auth state with less verbose logging
-        const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
+        // Create or load auth state only once
+        if (!authState || !saveCreds) {
+            const { state, saveCreds: saveCredsFunc } = await useMultiFileAuthState(SESSION_DIR);
+            authState = state;
+            saveCreds = saveCredsFunc;
+            console.log("Auth state initialized from", SESSION_DIR);
+        }
         
         // Create socket with optimized settings
         const arz = makeWASocket({
-            auth: state,
+            auth: authState,
             printQRInTerminal: false,
             logger: pino({ level: "error" }), // Only log errors
             browser: Browsers.ubuntu("Chrome"), // Use predefined browser
@@ -80,13 +97,29 @@ async function connectToWhatsApp() {
             syncFullHistory: false, // Don't sync full history to save memory
             markOnlineOnConnect: true,
             retryRequestDelayMs: 1000, // Retry delay
+            // Use single-file caching for keys to save memory
+            keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: "error" })),
+            // Optimize memory usage
+            options: {
+                maxIdleTimeMs: 60000,
+                emitOwnEvents: false, // Don't emit own events to save memory
+                customUploadHosts: false, // Don't use custom upload hosts
+                isInternalApp: true // Signal that this is an internal app
+            },
+            // Optimize transaction options
             transactionOpts: {
                 maxCommitRetries: 10,
                 delayBetweenTriesMs: 1000
+            },
+            // Minimize what gets stored in memory
+            getMessage: async () => {
+                return {
+                    conversation: ''
+                };
             }
         });
 
-        if (!state.creds.registered) {
+        if (!authState.creds.registered) {
             try {
                 const phoneNumber = await askPhoneNumber();
                 const code = await arz.requestPairingCode(phoneNumber);
@@ -122,7 +155,7 @@ async function connectToWhatsApp() {
             }
         };
 
-        // More efficient message handling
+        // Memory-optimized message handling
         arz.ev.on("messages.upsert", async ({ messages }) => {
             if (!messages || !messages.length) return;
             
@@ -194,6 +227,9 @@ async function connectToWhatsApp() {
                 }
             } catch (error) {
                 console.error("Error handling message:", error.message);
+            } finally {
+                // Clear message data to save memory
+                m.message = null;
             }
         });
 
@@ -237,9 +273,36 @@ async function connectToWhatsApp() {
             }
         });
 
+        // Save auth state on updates
         arz.ev.on("creds.update", saveCreds);
         
-        // Handle unexpected errors
+        // Clean up unused events and listeners
+        process.nextTick(() => {
+            // Limit event listeners to prevent memory leaks
+            arz.ev.removeAllListeners("chats.set");
+            arz.ev.removeAllListeners("contacts.set");
+            arz.ev.removeAllListeners("groups.update");
+            arz.ev.removeAllListeners("presence.update");
+        });
+        
+        // Memory optimization: periodic garbage collection
+        const gcInterval = setInterval(() => {
+            try {
+                if (global.gc) {
+                    global.gc();
+                    console.log("Manual garbage collection executed");
+                }
+            } catch (e) {
+                console.log("No manual GC available. Run with --expose-gc flag");
+            }
+        }, 30 * 60 * 1000); // Every 30 minutes
+        
+        // Clean up interval on process exit
+        process.on('exit', () => {
+            clearInterval(gcInterval);
+        });
+        
+        // Handle uncaught exceptions without exiting
         process.on('uncaughtException', (err) => {
             console.error('Uncaught Exception:', err);
             // Don't exit, let the reconnection handle it

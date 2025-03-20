@@ -72,9 +72,24 @@ function isRestartingTooFrequently() {
     return false;
 }
 
+// Clean up orphaned processes
+function cleanOrphanedProcesses() {
+    try {
+        // On Unix-like systems
+        if (process.platform !== 'win32') {
+            spawn('pkill', ['-f', 'node index.js']);
+        }
+    } catch (err) {
+        log(`Failed to clean orphaned processes: ${err.message}`);
+    }
+}
+
 // Function to start the bot with memory limits
 function startBot() {
     log('Starting WhatsApp bot...');
+    
+    // Clean orphaned processes
+    cleanOrphanedProcesses();
     
     // Update restart tracking
     restartCount++;
@@ -87,14 +102,24 @@ function startBot() {
         return;
     }
     
-    // Start with memory limits
-    // Use --max-old-space-size to limit memory usage
-    const bot = spawn('node', ['--max-old-space-size=512', 'index.js'], {
+    // Start with memory limits and garbage collection enabled
+    const bot = spawn('node', [
+        // Enable garbage collection
+        '--expose-gc',
+        // More aggressive memory management
+        '--optimize-for-size',
+        '--max-old-space-size=512',
+        // Optimize V8 memory
+        '--optimize_for_size',
+        '--gc_interval=100',
+        // Start the main process
+        'index.js'
+    ], {
         stdio: 'inherit',
         detached: false,
         env: {
             ...process.env,
-            NODE_OPTIONS: '--max-old-space-size=512' // Limit to 512MB
+            NODE_OPTIONS: '--max-old-space-size=512'
         }
     });
     
@@ -117,6 +142,37 @@ function startBot() {
     bot.on('error', (err) => {
         log(`Bot process error: ${err.message}`);
         // Let the exit handler deal with restarting
+    });
+    
+    // Monitor memory usage
+    let lastMemCheck = Date.now();
+    const memCheckInterval = setInterval(() => {
+        try {
+            const memUsage = process.memoryUsage();
+            const memUsageMB = Math.round(memUsage.rss / (1024 * 1024));
+            
+            // Log memory usage every hour
+            const now = Date.now();
+            if (now - lastMemCheck > 3600000) { // 1 hour
+                log(`Memory usage: ${memUsageMB} MB`);
+                lastMemCheck = now;
+            }
+            
+            // If memory usage is too high, restart the bot
+            if (memUsageMB > 450) { // Over 450MB
+                log(`Memory usage too high (${memUsageMB} MB). Restarting bot...`);
+                clearInterval(memCheckInterval);
+                bot.kill('SIGTERM');
+                setTimeout(startBot, 5000);
+            }
+        } catch (err) {
+            log(`Error checking memory: ${err.message}`);
+        }
+    }, 60000); // Check every minute
+    
+    // Clean up interval on bot exit
+    bot.on('exit', () => {
+        clearInterval(memCheckInterval);
     });
 }
 

@@ -11,12 +11,12 @@
   "license": "ISC",
   "description": "bot yang di buat dengan node js",
   "dependencies": {
+    "@bayumahadika/baileysx": "^6.10.1",
     "@whiskeysockets/baileys": "^6.7.16",
     "axios": "^1.8.3",
     "moment-timezone": "^0.5.47",
     "pino": "^9.6.0",
-    "qrcode-terminal": "^0.12.0",
-    "wa-sticker-formatter": "^4.4.4"
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
