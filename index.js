@@ -2,6 +2,7 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
+    Browsers
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const qrcode = require("qrcode-terminal");
@@ -11,10 +12,35 @@ const readline = require("readline");
 const config = require("./config.js");
 const rateLimiter = require("./rate-limiter.js");
 
+// Optimize by using a single readline interface
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
 });
+
+// Initialize commands map outside of the connection function
+const commands = new Map();
+const commandsLoaded = false;
+
+// Function to load commands just once
+function loadCommands() {
+    if (commandsLoaded) return;
+    
+    try {
+        const commandFiles = fs
+            .readdirSync("./plugins")
+            .filter((file) => file.endsWith(".js"));
+
+        for (const file of commandFiles) {
+            const command = require(`./plugins/${file}`);
+            commands.set(command.name, command);
+        }
+        
+        console.log(`Loaded ${commands.size} commands`);
+    } catch (error) {
+        console.error("Error loading commands:", error);
+    }
+}
 
 async function askPhoneNumber() {
     return new Promise((resolve) => {
@@ -27,157 +53,215 @@ async function askPhoneNumber() {
     });
 }
 
+// Connection retry counter
+let retryCount = 0;
+const MAX_RETRIES = 5;
+
 async function connectToWhatsApp() {
-    const { state, saveCreds } =
-        await useMultiFileAuthState("auth_info_baileys");
+    console.log("Connecting to WhatsApp...");
+    
+    try {
+        // Load commands once
+        if (!commandsLoaded) {
+            loadCommands();
+        }
+        
+        // Create auth state with less verbose logging
+        const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
+        
+        // Create socket with optimized settings
+        const arz = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: "error" }), // Only log errors
+            browser: Browsers.ubuntu("Chrome"), // Use predefined browser
+            connectTimeoutMs: 60000, // Increase timeout
+            keepAliveIntervalMs: 25000, // Increase keepalive interval
+            syncFullHistory: false, // Don't sync full history to save memory
+            markOnlineOnConnect: true,
+            retryRequestDelayMs: 1000, // Retry delay
+            transactionOpts: {
+                maxCommitRetries: 10,
+                delayBetweenTriesMs: 1000
+            }
+        });
 
-    const arz = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        logger: pino({ level: "silent" }),
-        browser: ["Ubuntu", "Chrome", "22.04.4"],
-    });
+        if (!state.creds.registered) {
+            try {
+                const phoneNumber = await askPhoneNumber();
+                const code = await arz.requestPairingCode(phoneNumber);
+                console.log(`Kode pairing anda: ${code}`);
+            } catch (error) {
+                console.log("Error saat meminta kode pairing:", error.message);
+                process.exit(1);
+            }
+        }
 
-    if (!state.creds.registered) {
-        const phoneNumber = await askPhoneNumber();
-        try {
-            const code = await arz.requestPairingCode(phoneNumber);
-            console.log(`Kode pairing anda: ${code}`);
-        } catch (error) {
-            console.log("Error saat meminta kode pairing");
+        // Rate-limiting for send message
+        const originalSendMessage = arz.sendMessage;
+        arz.sendMessage = async (jid, content, options = {}) => {
+            try {
+                if (!rateLimiter.canSendGlobalMessage()) {
+                    console.log(`Global rate limit tercapai! Menunggu...`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    return arz.sendMessage(jid, content, options);
+                }
+                
+                if (!rateLimiter.canSendMessage(jid)) {
+                    const cooldown = rateLimiter.getMessageCooldown(jid);
+                    console.log(`Rate limit untuk pesan ke ${jid}: tunggu ${cooldown}ms`);
+                    await new Promise(resolve => setTimeout(resolve, cooldown));
+                }
+                
+                return await originalSendMessage(jid, content, options);
+            } catch (error) {
+                console.error(`Error sending message to ${jid}:`, error.message);
+                // Retry once on error
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                return await originalSendMessage(jid, content, options);
+            }
+        };
+
+        // More efficient message handling
+        arz.ev.on("messages.upsert", async ({ messages }) => {
+            if (!messages || !messages.length) return;
+            
+            const m = messages[0];
+            if (!m.message) return;
+
+            const messageText =
+                m.message.conversation ||
+                (m.message.extendedTextMessage &&
+                m.message.extendedTextMessage.text) ||
+                "";
+            
+            if (!messageText) return;
+            
+            const sender = m.key.remoteJid;
+            const userId = m.key.participant || sender;
+
+            // Log only message start to reduce console spam
+            const logMessage = messageText.length > 20 ? 
+                messageText.substring(0, 20) + "..." : messageText;
+            console.log("Pesan:", logMessage, "dari:", sender);
+
+            try {
+                // Non-command messages
+                if (!messageText.startsWith(".")) {
+                    const greeting = commands.get("greeting");
+                    if (greeting) await greeting.execute(arz, sender, messageText, m);
+                    return;
+                }
+
+                // Rate limit check
+                if (!rateLimiter.canExecuteCommand(userId)) {
+                    const cooldown = rateLimiter.getCommandCooldown(userId);
+                    await arz.sendMessage(
+                        sender,
+                        { text: `⏳ Mohon tunggu ${cooldown} detik sebelum menggunakan perintah lagi.` },
+                        { quoted: m }
+                    );
+                    return;
+                }
+
+                // Command processing
+                const args = messageText.slice(1).trim().split(/ +/);
+                const commandName = args.shift().toLowerCase();
+
+                if (commands.has(commandName)) {
+                    try {
+                        const command = commands.get(commandName);
+
+                        // Owner-only check
+                        if (command.ownerOnly && sender !== config.ownerNumber) {
+                            await arz.sendMessage(
+                                sender, 
+                                { text: "❌ Maaf, perintah ini hanya dapat digunakan oleh owner bot." },
+                                { quoted: m }
+                            );
+                            return;
+                        }
+
+                        await command.execute(arz, sender, args, m);
+                    } catch (error) {
+                        console.error(`Error executing command ${commandName}:`, error.message);
+                        await arz.sendMessage(
+                            sender, 
+                            { text: "Terjadi kesalahan saat menjalankan perintah." },
+                            { quoted: m }
+                        );
+                    }
+                }
+            } catch (error) {
+                console.error("Error handling message:", error.message);
+            }
+        });
+
+        let isConnected = false;
+        arz.ev.on("connection.update", (update) => {
+            const { connection, lastDisconnect } = update;
+
+            if (connection === "close") {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                
+                console.log(`Connection closed, status code: ${statusCode}`);
+                
+                if (shouldReconnect) {
+                    retryCount++;
+                    if (retryCount <= MAX_RETRIES) {
+                        console.log(`Attempting to reconnect (${retryCount}/${MAX_RETRIES})...`);
+                        setTimeout(connectToWhatsApp, 5000);
+                    } else {
+                        console.log("Maximum reconnection attempts reached. Exiting...");
+                        process.exit(1);
+                    }
+                } else {
+                    console.log("Logged out. Exiting...");
+                    process.exit(0);
+                }
+            } else if (connection === "open" && !isConnected) {
+                console.log("Successfully connected to WhatsApp!");
+                isConnected = true;
+                retryCount = 0; // Reset retry counter on successful connection
+                
+                // Send connected message
+                arz.sendMessage(
+                    config.ownerNumber,
+                    { text: config.connectedMessage },
+                    { quoted: null }
+                ).catch(err => console.error("Failed to send connected message:", err.message));
+                
+                // Close readline interface
+                rl.close();
+            }
+        });
+
+        arz.ev.on("creds.update", saveCreds);
+        
+        // Handle unexpected errors
+        process.on('uncaughtException', (err) => {
+            console.error('Uncaught Exception:', err);
+            // Don't exit, let the reconnection handle it
+        });
+        
+        process.on('unhandledRejection', (reason, promise) => {
+            console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+            // Don't exit, let the reconnection handle it
+        });
+        
+    } catch (error) {
+        console.error("Error in connection setup:", error.message);
+        retryCount++;
+        if (retryCount <= MAX_RETRIES) {
+            console.log(`Attempting to reconnect after error (${retryCount}/${MAX_RETRIES})...`);
+            setTimeout(connectToWhatsApp, 5000);
+        } else {
+            console.log("Maximum reconnection attempts reached. Exiting...");
             process.exit(1);
         }
     }
-
-    const commands = new Map();
-    const commandFiles = fs
-        .readdirSync("./plugins")
-        .filter((file) => file.endsWith(".js"));
-
-    for (const file of commandFiles) {
-        const command = require(`./plugins/${file}`);
-        commands.set(command.name, command);
-    }
-
-    const originalSendMessage = arz.sendMessage;
-    arz.sendMessage = async (jid, content, options = {}) => {
-        if (!rateLimiter.canSendGlobalMessage()) {
-            console.log(`Global rate limit tercapai! Menunggu...`);
-            
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            return arz.sendMessage(jid, content, options);
-        }
-        
-        if (!rateLimiter.canSendMessage(jid)) {
-            const cooldown = rateLimiter.getMessageCooldown(jid);
-            console.log(`Rate limit untuk pesan ke ${jid}: tunggu ${cooldown}ms`);
-            
-            await new Promise(resolve => setTimeout(resolve, cooldown));
-        }
-        
-        return await originalSendMessage(jid, content, options);
-    };
-
-    arz.ev.on("messages.upsert", async ({ messages }) => {
-        const m = messages[0];
-        if (!m.message) return;
-
-        const messageText =
-            m.message.conversation ||
-            (m.message.extendedTextMessage &&
-                m.message.extendedTextMessage.text) ||
-            "";
-        const sender = m.key.remoteJid;
-        const userId = m.key.participant || sender;
-
-        console.log("Pesan:", messageText, "dari:", sender);
-
-        if (!messageText) return;
-
-        if (!messageText.startsWith(".")) {
-            const greeting = commands.get("greeting");
-            if (greeting) await greeting.execute(arz, sender, messageText, m);
-            return;
-        }
-
-        if (!rateLimiter.canExecuteCommand(userId)) {
-            const cooldown = rateLimiter.getCommandCooldown(userId);
-            await arz.sendMessage(
-                sender,
-                { text: `⏳ Mohon tunggu ${cooldown} detik sebelum menggunakan perintah lagi. Anda telah mencapai batas 5 perintah per menit.` },
-                { quoted: m }
-            );
-            return;
-        }
-
-        const args = messageText.slice(1).trim().split(/ +/);
-        const commandName = args.shift().toLowerCase();
-
-        if (commands.has(commandName)) {
-            try {
-                const command = commands.get(commandName);
-
-                if (command.ownerOnly && sender !== config.ownerNumber) {
-                    return await arz.sendMessage(
-                        sender, 
-                        {
-                            text: "❌ Maaf, perintah ini hanya dapat digunakan oleh owner bot.",
-                        },
-                        { quoted: m }
-                    );
-                }
-
-                await command.execute(arz, sender, args, m);
-            } catch (error) {
-                console.error(error);
-                await arz.sendMessage(
-                    sender, 
-                    {
-                        text: "Terjadi kesalahan saat menjalankan perintah.",
-                    },
-                    { quoted: m }
-                );
-            }
-        }
-    });
-
-    let isConnected = false;
-    arz.ev.on("connection.update", (update) => {
-        const { connection, lastDisconnect } = update;
-
-        if (connection === "close") {
-            const shouldReconnect =
-                lastDisconnect?.error?.output?.statusCode !==
-                DisconnectReason.loggedOut;
-            if (shouldReconnect && !isConnected) {
-                connectToWhatsApp();
-            }
-        } else if (connection === "open" && !isConnected) {
-            isConnected = true;
-            console.log("Terhubung ke WhatsApp");
-            const config = require("./config.js");
-            arz.sendMessage(
-                config.ownerNumber,
-                { text: config.connectedMessage },
-                {
-                    quoted: {
-                        key: {
-                            participant: "0@s.whatsapp.net",
-                            remoteJid: "status@broadcast",
-                            fromMe: false,
-                        },
-                        message: {
-                            conversation: `bot whatsapp by Arsyad`,
-                        },
-                    },
-                },
-            );
-            rl.close();
-        }
-    });
-
-    arz.ev.on("creds.update", saveCreds);
 }
 
+// Start the connection
 connectToWhatsApp();

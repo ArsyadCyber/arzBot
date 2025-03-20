@@ -1,16 +1,15 @@
 {
   "name": "arzBot",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "restart-wrapper.js",
   "scripts": {
-    "dev": "nodemon index.js",
-    "start": "node index.js",
-    "restart": "node restart-wrapper.js"
+    "dev": "nodemon restart-wrapper.js",
+    "start": "node restart-wrapper.js"
   },
   "keywords": [],
-  "author": "",
+  "author": "Arsyad",
   "license": "ISC",
-  "description": "",
+  "description": "bot yang di buat dengan node js",
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.16",
     "axios": "^1.8.3",

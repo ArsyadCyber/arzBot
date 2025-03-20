@@ -17,8 +17,12 @@ class RateLimiter {
         // Clean up old data on startup
         this.cleanOldData();
         
-        // Setup periodic saving
-        this.saveInterval = setInterval(() => this.saveData(), 60000); // Save every minute
+        // Less frequent saving - every 5 minutes instead of every minute
+        this.saveInterval = setInterval(() => this.saveData(), 300000);
+        
+        // Set up a throttled save function to prevent excessive writes
+        this.pendingSave = false;
+        this.lastSaveTime = Date.now();
     }
     
     ensureDbExists() {
@@ -54,19 +58,30 @@ class RateLimiter {
         }
     }
     
-    saveData(customData = null) {
-        try {
-            const data = customData || {
-                commandUsage: Object.fromEntries(this.commandUsage),
-                lastMessageTimestamp: Object.fromEntries(this.lastMessageTimestamp),
-                globalMessageTimestamps: this.globalMessageTimestamps,
-                hourlyMessageCount: this.hourlyMessageCount,
-                hourlyMessageStartTime: this.hourlyMessageStartTime
-            };
-            
-            fs.writeFileSync(this.dbPath, JSON.stringify(data, null, 2), 'utf-8');
-        } catch (error) {
-            console.error('Error saving rate limiter data:', error);
+    // Throttled save to prevent excessive disk I/O
+    saveData(customData = null, force = false) {
+        const now = Date.now();
+        // Only save if forced or if it's been at least 30 seconds since last save
+        if (force || now - this.lastSaveTime > 30000) {
+            try {
+                const data = customData || {
+                    commandUsage: Object.fromEntries(this.commandUsage),
+                    lastMessageTimestamp: Object.fromEntries(this.lastMessageTimestamp),
+                    globalMessageTimestamps: this.globalMessageTimestamps,
+                    hourlyMessageCount: this.hourlyMessageCount,
+                    hourlyMessageStartTime: this.hourlyMessageStartTime
+                };
+                
+                fs.writeFileSync(this.dbPath, JSON.stringify(data, null, 2), 'utf-8');
+                this.lastSaveTime = now;
+                this.pendingSave = false;
+            } catch (error) {
+                console.error('Error saving rate limiter data:', error);
+            }
+        } else if (!this.pendingSave) {
+            // Schedule a save in the future
+            this.pendingSave = true;
+            setTimeout(() => this.saveData(null, true), 30000);
         }
     }
     
@@ -74,7 +89,7 @@ class RateLimiter {
         const now = Date.now();
         const oneMinuteAgo = now - 60000;
         
-        // Clean up command usage data
+        // Clean up command usage data - only keep what's needed
         for (const [userId, timestamps] of this.commandUsage.entries()) {
             const recentCommands = timestamps.filter(timestamp => timestamp > oneMinuteAgo);
             if (recentCommands.length === 0) {
@@ -84,7 +99,7 @@ class RateLimiter {
             }
         }
         
-        // Clean up old message timestamps
+        // Clean up old message timestamps - only keep active users
         const oneHourAgo = now - 3600000;
         for (const [userId, timestamp] of this.lastMessageTimestamp.entries()) {
             if (timestamp < oneHourAgo) {
@@ -92,18 +107,16 @@ class RateLimiter {
             }
         }
         
-        // Clean up global message timestamps
-        this.globalMessageTimestamps = this.globalMessageTimestamps.filter(
-            timestamp => timestamp > oneMinuteAgo
-        );
+        // Only keep the most recent global message timestamps
+        // Keep only the last 50 timestamps for performance
+        if (this.globalMessageTimestamps.length > 50) {
+            this.globalMessageTimestamps = this.globalMessageTimestamps.slice(-50);
+        }
         
         // Reset hourly counter if needed
         if (now - this.hourlyMessageStartTime >= 3600000) {
             this.resetHourlyCount();
         }
-        
-        // Save cleaned data
-        this.saveData();
     }
 
     canExecuteCommand(userId) {
@@ -116,7 +129,10 @@ class RateLimiter {
         
         const userCommands = this.commandUsage.get(userId);
         
-        const recentCommands = userCommands.filter(timestamp => timestamp > oneMinuteAgo);
+        // Optimize by only filtering if there are any timestamps to check
+        const recentCommands = userCommands.length > 0 ? 
+            userCommands.filter(timestamp => timestamp > oneMinuteAgo) : [];
+        
         this.commandUsage.set(userId, recentCommands);
         
         if (recentCommands.length >= 5) {
@@ -161,9 +177,12 @@ class RateLimiter {
         }
         
         const oneSecondAgo = now - 1000;
-        this.globalMessageTimestamps = this.globalMessageTimestamps.filter(
-            timestamp => timestamp > oneSecondAgo
-        );
+        // Optimize by only filtering if there are timestamps to check
+        if (this.globalMessageTimestamps.length > 0) {
+            this.globalMessageTimestamps = this.globalMessageTimestamps.filter(
+                timestamp => timestamp > oneSecondAgo
+            );
+        }
         
         return this.globalMessageTimestamps.length < 10;
     }
@@ -172,6 +191,11 @@ class RateLimiter {
         const now = Date.now();
         this.globalMessageTimestamps.push(now);
         this.hourlyMessageCount++;
+        
+        // Trim the array if it's getting too long
+        if (this.globalMessageTimestamps.length > 100) {
+            this.globalMessageTimestamps = this.globalMessageTimestamps.slice(-50);
+        }
     }
     
     resetHourlyCount() {
@@ -199,12 +223,17 @@ class RateLimiter {
         const now = Date.now();
         const userCommands = this.commandUsage.get(userId);
         
+        if (userCommands.length < 5) {
+            return 0;
+        }
+        
         const recentCommands = userCommands.filter(timestamp => timestamp > now - 60000);
         
         if (recentCommands.length < 5) {
             return 0;
         }
         
+        // Find the oldest command in the recent commands
         const oldestCommand = Math.min(...recentCommands);
         const expiryTime = oldestCommand + 60000;
         const waitTime = Math.ceil((expiryTime - now) / 1000);
@@ -238,17 +267,17 @@ process.on('exit', () => {
     if (rateLimiter.saveInterval) {
         clearInterval(rateLimiter.saveInterval);
     }
-    rateLimiter.saveData();
+    rateLimiter.saveData(null, true); // Force save
 });
 
 // Handle unexpected shutdowns
 process.on('SIGINT', () => {
-    rateLimiter.saveData();
+    rateLimiter.saveData(null, true); // Force save
     process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-    rateLimiter.saveData();
+    rateLimiter.saveData(null, true); // Force save
     process.exit(0);
 });
 

@@ -1,5 +1,5 @@
 {
   "ext": "js",
   "ignore": ["node_modules/", "public/"],
-  "exec": "node ./index.js"
+  "exec": "node ./restart-wrapper.js"
 }
