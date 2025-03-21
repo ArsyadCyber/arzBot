@@ -6,28 +6,23 @@ module.exports = {
     category: 'Grup',
     usage: '.open',
     example: '.open',
+    // Permission flags
+    isGroup: true,    // Hanya dapat digunakan di grup
+    ownerOnly: false,  // Hanya owner yang bisa menggunakan
+    adminOnly: true,   // Hanya admin yang bisa menggunakan
     execute: async (arz, sender, args, m) => {
         try {
-            // Cek apakah pesan dikirim dari grup
-            if (!m.key.remoteJid.endsWith('@g.us')) {
-                return await arz.sendMessage(
-                    sender,
-                    { text: '❌ Perintah ini hanya dapat digunakan di dalam grup!' },
-                    { quoted: m }
-                );
-            }
 
             // Dapatkan info grup
             const groupMetadata = await arz.groupMetadata(sender);
-            const isAdmin = groupMetadata.participants.find(p => p.id === m.key.participant)?.admin === 'admin';
-            const isSuperAdmin = groupMetadata.participants.find(p => p.id === m.key.participant)?.admin === 'superadmin';
-            const isOwner = m.key.participant === config.ownerNumber;
+            const botId = arz.user.id.split(':')[0] + '@s.whatsapp.net';
+            const botParticipant = groupMetadata.participants.find(p => p.id === botId);
+            const isBotAdmin = botParticipant && (botParticipant.admin === 'admin' || botParticipant.admin === 'superadmin');
 
-            // Cek apakah pengirim adalah admin grup atau owner bot
-            if (!isAdmin && !isSuperAdmin && !isOwner) {
+if (!isBotAdmin) {
                 return await arz.sendMessage(
                     sender,
-                    { text: '❌ Perintah ini hanya dapat digunakan oleh admin grup atau owner bot!' },
+                    { text: '❌ Bot harus menjadi admin grup untuk menghapus status admin anggota!' },
                     { quoted: m }
                 );
             }

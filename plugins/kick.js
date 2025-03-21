@@ -25,11 +25,9 @@ module.exports = {
             
             // Cek apakah bot adalah admin
             const groupMetadata = await arz.groupMetadata(sender);
-            const botJid = arz.user.id;
-            const isBotAdmin = groupMetadata.participants
-                .filter(p => p.admin)
-                .map(p => p.id)
-                .includes(botJid);
+            const botId = arz.user.id.split(':')[0] + '@s.whatsapp.net';
+            const botParticipant = groupMetadata.participants.find(p => p.id === botId);
+            const isBotAdmin = botParticipant && (botParticipant.admin === 'admin' || botParticipant.admin === 'superadmin');
                 
             if (!isBotAdmin) {
                 await arz.sendMessage(

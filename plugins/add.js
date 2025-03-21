@@ -6,6 +6,10 @@ module.exports = {
     category: 'Grup',
     usage: '.add 628538998368 atau .add 628538998368 https://chat.whatsapp.com/xxx',
     example: '.add 628538998368 atau .add 628538998368 https://chat.whatsapp.com/xxx',
+// Permission flags
+    isGroup: true,    // Hanya dapat digunakan di grup
+    ownerOnly: false,  // Hanya owner yang bisa menggunakan
+    adminOnly: true,   // Hanya admin yang bisa menggunakan
     execute: async (arz, sender, args, m) => {
         try {
             // Cek apakah argumen nomor telepon diberikan
@@ -43,16 +47,7 @@ module.exports = {
                 // Cek status admin pengirim
                 const isAdmin = groupMetadata.participants.find(p => p.id === m.key.participant)?.admin === 'admin';
                 const isSuperAdmin = groupMetadata.participants.find(p => p.id === m.key.participant)?.admin === 'superadmin';
-                const isOwner = m.key.participant === config.ownerNumber;
 
-                // Cek apakah pengirim adalah admin grup atau owner bot
-                if (!isAdmin && !isSuperAdmin && !isOwner) {
-                    return await arz.sendMessage(
-                        sender,
-                        { text: '❌ Perintah ini hanya dapat digunakan oleh admin grup atau owner bot!' },
-                        { quoted: m }
-                    );
-                }
 
                 // Cek apakah bot adalah admin
                 const botId = arz.user.id.split(':')[0] + '@s.whatsapp.net';

@@ -6,34 +6,15 @@ module.exports = {
     category: 'Grup',
     usage: '.promote @user / .promote 628xxxx / .promote (reply pesan)',
     example: '.promote @user',
+    // Permission flags
+    isGroup: true,    // Hanya dapat digunakan di grup
+    ownerOnly: false,  // Hanya owner yang bisa menggunakan
+    adminOnly: true,   // Hanya admin yang bisa menggunakan
     execute: async (arz, sender, args, m) => {
         try {
-            // Cek apakah pesan dikirim dari grup
-            if (!m.key.remoteJid.endsWith('@g.us')) {
-                return await arz.sendMessage(
-                    sender,
-                    { text: '❌ Perintah ini hanya dapat digunakan di dalam grup!' },
-                    { quoted: m }
-                );
-            }
-
             // Dapatkan info grup
             const groupMetadata = await arz.groupMetadata(sender);
             
-            // Cek status admin pengirim
-            const isAdmin = groupMetadata.participants.find(p => p.id === m.key.participant)?.admin === 'admin';
-            const isSuperAdmin = groupMetadata.participants.find(p => p.id === m.key.participant)?.admin === 'superadmin';
-            const isOwner = m.key.participant === config.ownerNumber;
-
-            // Cek apakah pengirim adalah admin grup atau owner bot
-            if (!isAdmin && !isSuperAdmin && !isOwner) {
-                return await arz.sendMessage(
-                    sender,
-                    { text: '❌ Perintah ini hanya dapat digunakan oleh admin grup atau owner bot!' },
-                    { quoted: m }
-                );
-            }
-
             // Cek apakah bot adalah admin
             const botId = arz.user.id.split(':')[0] + '@s.whatsapp.net';
             const botParticipant = groupMetadata.participants.find(p => p.id === botId);

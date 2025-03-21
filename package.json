@@ -14,6 +14,7 @@
     "@bayumahadika/baileysx": "^6.10.1",
     "@whiskeysockets/baileys": "^6.7.16",
     "axios": "^1.8.3",
+    "chalk": "^4.1.2",
     "moment-timezone": "^0.5.47",
     "pino": "^9.6.0",
     "qrcode-terminal": "^0.12.0"

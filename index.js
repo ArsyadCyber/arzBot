@@ -10,6 +10,7 @@ const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const logger = require('./logger');
 const config = require("./config.js");
 const rateLimiter = require("./rate-limiter.js");
 
@@ -176,7 +177,8 @@ async function connectToWhatsApp() {
             // Log only message start to reduce console spam
             const logMessage = messageText.length > 20 ? 
                 messageText.substring(0, 20) + "..." : messageText;
-            console.log("Pesan:", logMessage, "dari:", sender);
+            logger.message("Pesan:", logMessage, "dari:", sender);
+
 
             try {
                 // Non-command messages
@@ -185,6 +187,19 @@ async function connectToWhatsApp() {
                     if (greeting) await greeting.execute(arz, sender, messageText, m);
                     return;
                 }
+
+try {
+        const antispamCommand = commands.get("antispam");
+        if (antispamCommand && antispamCommand.checkSpamMessage) {
+            const isSpam = await antispamCommand.checkSpamMessage(arz, m);
+            if (isSpam) {
+                // Jika pesan terdeteksi spam dan sudah ditangani, jangan proses lebih lanjut
+                return;
+            }
+        }
+    } catch (error) {
+        console.error("Error checking spam:", error.message);
+    }
 
                 // Rate limit check
                 if (!rateLimiter.canExecuteCommand(userId)) {
